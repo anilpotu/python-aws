@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aws-s3-service
+description: FastAPI REST API for S3 file operations with SNS/SQS
+version: 1.0.0
+appVersion: "1.0.0"
+type: application

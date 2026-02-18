@@ -1,0 +1,136 @@
+stages:
+  - lint
+  - test
+  - build
+  - deploy
+
+variables:
+  PROJECT_NAME: "aws-s3-service"
+
+lint:
+  stage: lint
+  image: python:3.12-slim
+  script:
+    - pip install --quiet ruff
+    - ruff check app/
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+
+test:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - pip install --quiet -r requirements.txt
+    - pip install --quiet pytest httpx
+    - python -m pytest tests/ -v
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+
+.build_template: &build_template
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apk add --no-cache aws-cli
+    - aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+  script:
+    - docker build -t ${ECR_REPOSITORY_URL}:${CI_COMMIT_SHORT_SHA} -t ${ECR_REPOSITORY_URL}:latest .
+    - docker push ${ECR_REPOSITORY_URL}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${ECR_REPOSITORY_URL}:latest
+
+build-dev:
+  <<: *build_template
+  environment:
+    name: dev
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    ECR_REPOSITORY_URL: ${ECR_REGISTRY}/${PROJECT_NAME}-dev
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+
+build-prod:
+  <<: *build_template
+  environment:
+    name: prod
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    ECR_REPOSITORY_URL: ${ECR_REGISTRY}/${PROJECT_NAME}-prod
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+.deploy_template: &deploy_template
+  stage: deploy
+  image: alpine/helm:3.14
+  before_script:
+    - apk add --no-cache aws-cli curl
+    - aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${AWS_REGION}
+
+deploy-dev:
+  <<: *deploy_template
+  environment:
+    name: dev
+  variables:
+    EKS_CLUSTER_NAME: "${PROJECT_NAME}-dev"
+  script:
+    - |
+      helm upgrade --install ${PROJECT_NAME} helm/aws-s3-service/ \
+        -f helm/aws-s3-service/values.yaml \
+        -f helm/aws-s3-service/values-dev.yaml \
+        --set image.tag=${CI_COMMIT_SHORT_SHA} \
+        --wait --timeout 5m
+    - |
+      echo "Running smoke test..."
+      HEALTH_IP=$(kubectl get svc ${PROJECT_NAME}-aws-s3-service -o jsonpath='{.spec.clusterIP}')
+      for i in $(seq 1 20); do
+        STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://${HEALTH_IP}/health || true)
+        if [ "$STATUS" = "200" ]; then
+          echo "Smoke test passed"
+          exit 0
+        fi
+        echo "Attempt $i: status $STATUS, waiting..."
+        sleep 10
+      done
+      echo "Smoke test failed"
+      exit 1
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+
+deploy-prod:
+  <<: *deploy_template
+  environment:
+    name: prod
+  variables:
+    EKS_CLUSTER_NAME: "${PROJECT_NAME}-prod"
+  script:
+    - |
+      helm upgrade --install ${PROJECT_NAME} helm/aws-s3-service/ \
+        -f helm/aws-s3-service/values.yaml \
+        -f helm/aws-s3-service/values-prod.yaml \
+        --set image.tag=${CI_COMMIT_SHORT_SHA} \
+        --wait --timeout 5m
+    - |
+      echo "Running smoke test..."
+      HEALTH_IP=$(kubectl get svc ${PROJECT_NAME}-aws-s3-service -o jsonpath='{.spec.clusterIP}')
+      for i in $(seq 1 30); do
+        STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://${HEALTH_IP}/health || true)
+        if [ "$STATUS" = "200" ]; then
+          echo "Smoke test passed"
+          exit 0
+        fi
+        echo "Attempt $i: status $STATUS, waiting..."
+        sleep 10
+      done
+      echo "Smoke test failed"
+      exit 1
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: false

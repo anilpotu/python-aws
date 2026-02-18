@@ -1,0 +1,135 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'prod'], description: 'Target environment to deploy')
+    }
+
+    environment {
+        AWS_REGION   = 'us-east-1'
+        PROJECT_NAME = 'aws-s3-service'
+        IMAGE_TAG    = "${env.BUILD_NUMBER}"
+        TF_DIR       = "terraform/environments/${params.ENVIRONMENT}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Lint') {
+            steps {
+                sh '''
+                    pip install --quiet ruff
+                    ruff check app/
+                '''
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh '''
+                    pip install --quiet -r requirements.txt
+                    pip install --quiet pytest httpx
+                    python -m pytest tests/ -v
+                '''
+            }
+        }
+
+        stage('Build & Push Docker Image') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials']]) {
+                    script {
+                        def ecrUrl = sh(
+                            script: "cd ${TF_DIR} && terraform output -raw ecr_repository_url",
+                            returnStdout: true
+                        ).trim()
+                        def registry = ecrUrl.split('/')[0]
+
+                        sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${registry}"
+                        sh "docker build -t ${ecrUrl}:${IMAGE_TAG} -t ${ecrUrl}:latest ."
+                        sh "docker push ${ecrUrl}:${IMAGE_TAG}"
+                        sh "docker push ${ecrUrl}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Init & Plan') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials']]) {
+                    sh """
+                        cd ${TF_DIR}
+                        terraform init
+                        terraform plan -var="image_tag=${IMAGE_TAG}" -out=tfplan
+                    """
+                }
+            }
+        }
+
+        stage('Approval') {
+            when {
+                expression { params.ENVIRONMENT == 'prod' }
+            }
+            steps {
+                input message: 'Deploy to PRODUCTION?', ok: 'Deploy'
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials']]) {
+                    sh """
+                        cd ${TF_DIR}
+                        terraform apply -auto-approve tfplan
+                    """
+                }
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials']]) {
+                    script {
+                        def albUrl = sh(
+                            script: "cd ${TF_DIR} && terraform output -raw alb_url",
+                            returnStdout: true
+                        ).trim()
+
+                        sh """
+                            for i in \$(seq 1 30); do
+                                STATUS=\$(curl -s -o /dev/null -w '%{http_code}' http://${albUrl}/health || true)
+                                if [ "\$STATUS" = "200" ]; then
+                                    echo "Health check passed"
+                                    exit 0
+                                fi
+                                echo "Attempt \$i: status \$STATUS, waiting..."
+                                sleep 10
+                            done
+                            echo "Smoke test failed after 5 minutes"
+                            exit 1
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Pipeline failed for ${params.ENVIRONMENT} environment"
+        }
+        success {
+            echo "Deployment to ${params.ENVIRONMENT} completed successfully"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

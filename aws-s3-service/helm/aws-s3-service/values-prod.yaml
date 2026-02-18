@@ -1,0 +1,32 @@
+replicaCount: 2
+
+image:
+  repository: "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/aws-s3-service-prod"
+  tag: "latest"
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::<AWS_ACCOUNT_ID>:role/aws-s3-service-prod-irsa"
+
+env:
+  AWS_REGION: "us-east-1"
+  S3_BUCKET_NAME: "aws-s3-service-prod-data"
+  SNS_TOPIC_ARN: "arn:aws:sns:us-east-1:<AWS_ACCOUNT_ID>:aws-s3-service-prod-notifications"
+  SQS_QUEUE_URL: "https://sqs.us-east-1.amazonaws.com/<AWS_ACCOUNT_ID>/aws-s3-service-prod-queue"
+
+resources:
+  requests:
+    cpu: 256m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1024Mi
+
+hpa:
+  minReplicas: 2
+  maxReplicas: 10
+
+istio:
+  gateway:
+    hosts:
+      - "aws-s3-service.example.com"

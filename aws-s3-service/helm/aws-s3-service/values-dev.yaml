@@ -1,0 +1,32 @@
+replicaCount: 1
+
+image:
+  repository: "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/aws-s3-service-dev"
+  tag: "latest"
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::<AWS_ACCOUNT_ID>:role/aws-s3-service-dev-irsa"
+
+env:
+  AWS_REGION: "us-east-1"
+  S3_BUCKET_NAME: "aws-s3-service-dev-data"
+  SNS_TOPIC_ARN: "arn:aws:sns:us-east-1:<AWS_ACCOUNT_ID>:aws-s3-service-dev-notifications"
+  SQS_QUEUE_URL: "https://sqs.us-east-1.amazonaws.com/<AWS_ACCOUNT_ID>/aws-s3-service-dev-queue"
+
+resources:
+  requests:
+    cpu: 128m
+    memory: 256Mi
+  limits:
+    cpu: 256m
+    memory: 512Mi
+
+hpa:
+  minReplicas: 1
+  maxReplicas: 3
+
+istio:
+  gateway:
+    hosts:
+      - "dev.aws-s3-service.example.com"

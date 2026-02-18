@@ -1,0 +1,18 @@
+{{- if .Values.istio.enabled }}
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: {{ include "aws-s3-service.fullname" . }}
+  labels:
+    {{- include "aws-s3-service.labels" . | nindent 4 }}
+spec:
+  host: {{ include "aws-s3-service.fullname" . }}
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: {{ .Values.istio.destinationRule.connectionPool.tcp.maxConnections }}
+      http:
+        h2UpgradePolicy: {{ .Values.istio.destinationRule.connectionPool.http.h2UpgradePolicy }}
+        http1MaxPendingRequests: {{ .Values.istio.destinationRule.connectionPool.http.http1MaxPendingRequests }}
+        http2MaxRequests: {{ .Values.istio.destinationRule.connectionPool.http.http2MaxRequests }}
+{{- end }}
