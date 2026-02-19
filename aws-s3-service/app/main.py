@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.routers import health, s3, sns
+from app.routers import users
+from app.services import db_service
 from app.services.sqs_service import poll_sqs
 
 logging.basicConfig(
@@ -15,9 +17,16 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialise PostgreSQL connection pool
+    await db_service.init_pool()
+
+    # Start SQS consumer background task
     stop_event = asyncio.Event()
     sqs_task = asyncio.create_task(poll_sqs(stop_event))
+
     yield
+
+    # Shutdown
     stop_event.set()
     sqs_task.cancel()
     try:
@@ -25,14 +34,17 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
+    await db_service.close_pool()
+
 
 app = FastAPI(
     title="AWS S3 Service",
-    description="REST API for S3 file operations with SNS notifications and SQS consumer",
-    version="1.0.0",
+    description="REST API for S3 file operations, user data (PostgreSQL), SNS notifications, and SQS",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 app.include_router(health.router)
 app.include_router(s3.router)
 app.include_router(sns.router)
+app.include_router(users.router)

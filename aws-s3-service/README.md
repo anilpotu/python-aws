@@ -1,6 +1,6 @@
 # AWS S3 Service
 
-REST API for S3 file operations with SNS notifications and SQS message processing, built with FastAPI and Python 3.12.
+REST API for S3 file operations, user data management (personal, financial, health), PostgreSQL persistence, SNS notifications, and SQS message processing, built with FastAPI and Python 3.12.
 
 ## Table of Contents
 
@@ -43,13 +43,25 @@ REST API for S3 file operations with SNS notifications and SQS message processin
      │  └─────┬──────┘ │     │  └──────┬─────────┘ │
      └────────┼────────┘     └─────────┼───────────┘
               │                        │
-     ┌────────▼────────────────────────▼────────┐
-     │                AWS Services              │
-     │  ┌─────────┐  ┌─────────┐  ┌──────────┐ │
-     │  │   S3    │  │   SNS   │──│   SQS    │ │
-     │  │ (JSON)  │  │ (Notify)│  │(Consume) │ │
-     │  └─────────┘  └─────────┘  └──────────┘ │
-     └──────────────────────────────────────────┘
+     ┌────────▼────────────────────────▼────────────────────┐
+     │                    AWS Services                      │
+     │  ┌─────────┐  ┌─────────┐  ┌──────────┐            │
+     │  │   S3    │  │   SNS   │──│   SQS    │            │
+     │  │ (JSON)  │  │ (Notify)│  │(Produce/ │            │
+     │  │personal/│  └─────────┘  │Consume)  │            │
+     │  │financial│               └──────────┘            │
+     │  │health   │                                        │
+     │  └─────────┘                                        │
+     └──────────────────────────────────────────────────────┘
+              │
+     ┌────────▼──────────────┐
+     │     PostgreSQL        │
+     │  ┌──────────────────┐ │
+     │  │ users_personal   │ │
+     │  │ users_financial  │ │
+     │  │ users_health     │ │
+     │  └──────────────────┘ │
+     └───────────────────────┘
 ```
 
 The application supports two deployment targets:
@@ -57,21 +69,119 @@ The application supports two deployment targets:
 - **ECS Fargate** — serverless containers behind an ALB, deployed via Jenkins and Terraform
 - **EKS (Kubernetes)** — pods with Istio service mesh, deployed via GitLab CI/CD and Helm
 
-Both share the same VPC, ECR, and AWS messaging resources (S3, SNS, SQS).
+Both share the same VPC, ECR, and AWS messaging resources (S3, SNS, SQS), and connect to a PostgreSQL database for persistent user data storage.
 
 ---
 
 ## API Endpoints
 
+### Health
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check — returns `{"message": "ok"}` |
-| `GET` | `/s3/{key}` | Read a JSON file from S3 by key |
+
+### S3 File Operations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/s3/{key}` | Read any JSON file from S3 by key |
 | `PUT` | `/s3/{key}` | Merge-update a JSON file in S3, then notify via SNS |
 | `POST` | `/s3/upload` | Upload a new JSON file to S3, then notify via SNS |
+
+### SNS
+
+| Method | Path | Description |
+|--------|------|-------------|
 | `POST` | `/sns/publish` | Publish a custom message to the SNS topic |
 
+### User Data — S3 Reads
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/users/{user_id}/s3/personal` | Read `users/personal/{user_id}.json` from S3 |
+| `GET` | `/users/{user_id}/s3/financial` | Read `users/financial/{user_id}.json` from S3 |
+| `GET` | `/users/{user_id}/s3/health` | Read `users/health/{user_id}.json` from S3 |
+| `GET` | `/users/{user_id}/s3/all` | Read and merge all three S3 files for a user |
+
+### User Data — PostgreSQL (Personal Information)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/users/personal` | Insert personal info (name, email, phone, address, date of birth) |
+| `GET` | `/users/{user_id}/personal` | Fetch personal info from the database |
+| `PATCH` | `/users/{user_id}/personal` | Partial update of personal info |
+| `DELETE` | `/users/{user_id}/personal` | Delete personal info |
+
+### User Data — PostgreSQL (Financial Information)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/users/financial` | Insert financial info (account number, credit score, income, debt) |
+| `GET` | `/users/{user_id}/financial` | Fetch financial info from the database |
+| `PATCH` | `/users/{user_id}/financial` | Partial update of financial info |
+| `DELETE` | `/users/{user_id}/financial` | Delete financial info |
+
+### User Data — PostgreSQL (Health Information)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/users/health` | Insert health info (blood type, conditions, medications, allergies) |
+| `GET` | `/users/{user_id}/health` | Fetch health info from the database |
+| `PATCH` | `/users/{user_id}/health` | Partial update of health info |
+| `DELETE` | `/users/{user_id}/health` | Delete health info |
+
+### User Data — Aggregated & SQS
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/users/{user_id}` | Fetch all stored records (personal + financial + health) for a user |
+| `POST` | `/users/sqs/send` | Fetch DB records and publish them to SQS (`data_type`: `personal`, `financial`, `health`, or `all`) |
+
 A background SQS consumer long-polls the configured queue and processes incoming messages automatically on startup.
+
+---
+
+## Database Schema
+
+Tables are created automatically on application startup if they do not exist.
+
+### `users_personal`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT (PK) | Unique user identifier |
+| `name` | TEXT | Full name |
+| `email` | TEXT | Email address |
+| `phone` | TEXT | Phone number |
+| `address` | TEXT | Physical address |
+| `date_of_birth` | DATE | Date of birth |
+| `created_at` | TIMESTAMPTZ | Row creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+
+### `users_financial`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT (PK) | Unique user identifier |
+| `account_number` | TEXT | Bank account number |
+| `credit_score` | INTEGER | Credit score |
+| `annual_income` | NUMERIC(15,2) | Annual income |
+| `total_debt` | NUMERIC(15,2) | Total outstanding debt |
+| `created_at` | TIMESTAMPTZ | Row creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+
+### `users_health`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT (PK) | Unique user identifier |
+| `blood_type` | TEXT | Blood type (e.g. `O+`) |
+| `conditions` | TEXT[] | List of medical conditions |
+| `medications` | TEXT[] | List of current medications |
+| `allergies` | TEXT[] | List of known allergies |
+| `created_at` | TIMESTAMPTZ | Row creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
 
 ---
 
@@ -80,18 +190,20 @@ A background SQS consumer long-polls the configured queue and processes incoming
 ```
 aws-s3-service/
 ├── app/                          # Application source code
-│   ├── main.py                   # FastAPI app entry point + SQS lifespan
+│   ├── main.py                   # FastAPI app entry point + DB pool + SQS lifespan
 │   ├── config.py                 # Settings via pydantic-settings
 │   ├── routers/
 │   │   ├── health.py             # GET /health
-│   │   ├── s3.py                 # S3 CRUD endpoints
-│   │   └── sns.py                # SNS publish endpoint
+│   │   ├── s3.py                 # Generic S3 CRUD endpoints
+│   │   ├── sns.py                # SNS publish endpoint
+│   │   └── users.py              # User data endpoints (S3 reads, DB CRUD, SQS send)
 │   ├── schemas/
 │   │   └── models.py             # Pydantic request/response models
 │   └── services/
-│       ├── s3_service.py         # S3 read/update/upload logic
+│       ├── s3_service.py         # S3 read/update/upload + typed readers per data domain
 │       ├── sns_service.py        # SNS publish logic
-│       └── sqs_service.py        # Background SQS consumer
+│       ├── sqs_service.py        # SQS consumer (poll) + producer (send_message)
+│       └── db_service.py         # PostgreSQL CRUD via asyncpg (personal/financial/health)
 │
 ├── terraform/                    # Infrastructure as Code
 │   ├── modules/
@@ -130,6 +242,7 @@ aws-s3-service/
 
 - Docker and Docker Compose
 - Python 3.12+ (for running outside Docker)
+- PostgreSQL 14+ (or use a Docker container)
 
 ### Running with Docker Compose
 
@@ -145,6 +258,7 @@ Docker Compose starts the app alongside [LocalStack](https://localstack.cloud/),
    S3_BUCKET_NAME=my-bucket
    SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:my-topic
    SQS_QUEUE_URL=http://localstack:4566/000000000000/my-queue
+   DATABASE_URL=postgresql://postgres:password@postgres:5432/userdata
    ```
 
 3. Start the services:
@@ -152,7 +266,7 @@ Docker Compose starts the app alongside [LocalStack](https://localstack.cloud/),
    docker-compose up --build
    ```
 
-4. The API is available at `http://localhost:8000`. API docs at `http://localhost:8000/docs`.
+4. The API is available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
 5. Create the required LocalStack resources:
    ```bash
@@ -166,12 +280,14 @@ Docker Compose starts the app alongside [LocalStack](https://localstack.cloud/),
    aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name my-queue
    ```
 
+6. The PostgreSQL tables (`users_personal`, `users_financial`, `users_health`) are created automatically when the application starts.
+
 ### Running without Docker
 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env with your configuration
+# Edit .env with your configuration, including DATABASE_URL
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -190,6 +306,7 @@ All configuration is loaded from environment variables (or a `.env` file) via `p
 | `S3_BUCKET_NAME` | **Yes** | — | Target S3 bucket name |
 | `SNS_TOPIC_ARN` | **Yes** | — | Full SNS topic ARN |
 | `SQS_QUEUE_URL` | **Yes** | — | Full SQS queue URL |
+| `DATABASE_URL` | **Yes** | — | PostgreSQL DSN, e.g. `postgresql://user:pass@host:5432/db` |
 
 **Credential handling in production:**
 
@@ -517,9 +634,10 @@ aws logs tail /ecs/aws-s3-service-dev --follow
 ```
 
 Common causes:
-- Missing environment variables (`S3_BUCKET_NAME`, `SNS_TOPIC_ARN`, `SQS_QUEUE_URL`)
+- Missing environment variables (`S3_BUCKET_NAME`, `SNS_TOPIC_ARN`, `SQS_QUEUE_URL`, `DATABASE_URL`)
 - IAM permissions insufficient for S3/SNS/SQS access
 - ECR image not found (check the image tag)
+- PostgreSQL unreachable — verify `DATABASE_URL` and security group rules
 
 ### EKS Pods CrashLoopBackOff
 
@@ -530,8 +648,22 @@ kubectl logs -l app.kubernetes.io/name=aws-s3-service --previous
 
 Common causes:
 - IRSA role not correctly annotated on the ServiceAccount
-- Helm values missing required `env.*` values
+- Helm values missing required `env.*` values (including `DATABASE_URL`)
 - Istio sidecar injection issues (check `istio-injection` label on namespace)
+- PostgreSQL connection refused — check host, port, credentials, and network policy
+
+### Database Connection Issues
+
+```bash
+# Test connectivity from inside a pod
+kubectl exec -it <pod-name> -- python -c \
+  "import asyncio, asyncpg; asyncio.run(asyncpg.connect('$DATABASE_URL'))"
+```
+
+Common causes:
+- Incorrect `DATABASE_URL` format (must be `postgresql://user:pass@host:5432/db`)
+- PostgreSQL not accepting connections from the app's IP/subnet
+- Wrong database name or user credentials
 
 ### Terraform State Lock
 

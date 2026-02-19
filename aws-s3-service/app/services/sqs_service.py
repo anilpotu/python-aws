@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from typing import Any
 
 import boto3
 
@@ -14,6 +15,44 @@ def _get_sqs_client():
     if settings.aws_endpoint_url:
         kwargs["endpoint_url"] = settings.aws_endpoint_url
     return boto3.client("sqs", **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Producer: send a message to SQS
+# ---------------------------------------------------------------------------
+
+def send_message(
+    payload: dict[str, Any],
+    *,
+    message_group_id: str | None = None,
+    message_deduplication_id: str | None = None,
+) -> str:
+    """Send a JSON payload to the configured SQS queue.
+
+    Args:
+        payload: Dict that will be JSON-serialised as the message body.
+        message_group_id: Required for FIFO queues; ignored for standard queues.
+        message_deduplication_id: Required for FIFO queues without content-based
+            deduplication; ignored for standard queues.
+
+    Returns:
+        The SQS MessageId of the sent message.
+    """
+    client = _get_sqs_client()
+    body = json.dumps(payload)
+    kwargs: dict[str, Any] = {
+        "QueueUrl": settings.sqs_queue_url,
+        "MessageBody": body,
+    }
+    if message_group_id:
+        kwargs["MessageGroupId"] = message_group_id
+    if message_deduplication_id:
+        kwargs["MessageDeduplicationId"] = message_deduplication_id
+
+    response = client.send_message(**kwargs)
+    message_id: str = response["MessageId"]
+    logger.info("Sent SQS message %s to %s", message_id, settings.sqs_queue_url)
+    return message_id
 
 
 def _process_message(message: dict) -> None:

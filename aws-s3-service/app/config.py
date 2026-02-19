@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     sns_topic_arn: str
     sqs_queue_url: str
 
+    # PostgreSQL connection string, e.g.:
+    # postgresql://user:password@host:5432/dbname
+    database_url: str
+
     model_config = {"env_file": ".env"}
 
 
